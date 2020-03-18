@@ -4,8 +4,8 @@
 * Research Question 3: Do customers perceive a trained salesperson more competent than an untrained salesperson?
 
 <sup> Other people who worked on the project: <sub> 
--<sup> Priyanka Pandey <sub> 
--<sup> Sikha Rani Das <sub> 
--<sup> Sunanda Daftari <sub>
+- <sup> Priyanka Pandey <sub> 
+- <sup> Sikha Rani Das <sub> 
+- <sup> Sunanda Daftari <sub>
 
 
