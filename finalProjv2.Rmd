@@ -1,0 +1,424 @@
+---
+title: "Final Project"
+author: "Sunanda Daftari"
+date: "October 27, 2017"
+output: html_document
+---
+## Set the directory
+```{r}
+setwd("D:/MS/Santa Clara University/OMIS/Working Directory/Salesperson Training Project/FirstQuestion")
+```
+#loading the data
+```{r}
+hrdata=read.table("Transaction-HR data FY11-FY14.txt",
+                   sep="\t",
+                   header=TRUE,
+                   fill=FALSE,
+                   strip.white=TRUE)
+install.packages("readxl")
+library(readxl)
+Training12=read_excel("t12model1.xlsx")
+Training13=read_excel("t13model1.xlsx")
+store=read.csv("Store attributes.csv", sep=",")
+survey=read.csv("Survey data.csv")
+```
+# Merging survey data with hrdata
+```{r}
+#changing 'No=2 to No=0'and 'do not recall=9 to do not recall=NA' for columns7,8,19
+survey$greetedbinary<- ifelse(survey$greetedbinary==9,NA,ifelse(survey$greetedbinary==2,0,1))
+survey$jcdiscussedcreditoptionsbinary<- ifelse(survey$jcdiscussedcreditoptionsbinary==9,NA,ifelse(survey$jcdiscussedcreditoptionsbinary==2,0,1))
+survey$informedeventbinary<- ifelse(survey$informedeventbinary==2,0,1)
+
+#Creating columns for average of service competency score and average product competency scores
+survey$servicecompetency<-rowMeans(survey[,c("sh1","sh2","sh3","sh4","sh5","pressure")],na.rm=TRUE)
+survey$productcompetency<-rowMeans(survey[,c("sc1","sc2","sc3","sc4")],na.rm=TRUE)
+
+#renaming "purchase transaction amount" to "net_purchase_amount"
+colnames(survey)[colnames(survey)=="purchasetransactionamount"]<-"net_purchase_amount"
+library(dplyr)
+# checking for duplicate transactions per year and removing them
+uniqueTransHRdata<-distinct(hrdata)#there were 76,693 duplicate rows.
+
+#Merging uniqueTransHRdata with surveydata
+HRdataSurvey<- merge(uniqueTransHRdata, survey, by=c("customer_id","net_purchase_amount","transaction_id","purchase_date","store_number"), all=TRUE)
+
+#Merge added extra 413 rows. Removing them.
+HRdataSurvey<-HRdataSurvey[!is.na(HRdataSurvey$sales_assoc_1), ]
+
+```
+#distinct  sales associate dataset from HR
+```{r}
+subsetHRdata<- HRdataSurvey[c("sales_assoc_1","SA_gender","SA_AssignmentCategory","SA_MartialStatus","SA_Dependent")]
+library(dplyr)
+uniqueHRdata<-distinct(subsetHRdata)
+```
+# monthly HR data
+```{r}
+#creating dummy variables for gender of customers
+HRdataSurvey$female<-ifelse(HRdataSurvey$gender=="F",1,0)
+HRdataSurvey$male<-ifelse(HRdataSurvey$gender=="M",1,0)
+
+#creating dummy variable for home owner code
+HRdataSurvey$homeowners<-ifelse(HRdataSurvey$homeowner_code=="O",1,0)
+
+#creating dummy variable for child of a customer
+HRdataSurvey$child<-ifelse(HRdataSurvey$child=="Y",1,0)
+
+#monthly sales per sales associate per store, total no.of monthly returns per store per sales associate,mean of age band of customers dealt by a sales associate during a particular month per store,mean of income band of customers dealt by a sales aassociate during a particular month per store,total no. of females making purchases during a month per sales associate per store,total no. of males making purchases during a month per sales associate per store,sales associate service years as of that month, sales associate's rate of pay for that particular month and  count variable gives the total no. of purchases made during a particular month,meanChild,meanHomeowners,year of transaction per sales associate per store per monthindex mean of surveyscores, mean of purchase basket size
+monthlyHRaggregate=HRdataSurvey %>% group_by(sales_assoc_1,month_index,store_number) %>% summarise(year=mean(year),monthlysales=sum(net_purchase_amount),monthlyreturn=sum(return),meanAgeBand=mean(age_band),meanIncomeCode=mean(est_income_code),MeanFemales=mean(female), MeanMales=mean(male),SA_serviceyears=mean(SA_YearsofService),SA_rateofPay=mean(SA_RateofPay),meanChild=mean(child),meanHomeowners=mean(homeowners),count=n(),meanPurchaseBasketSize=mean(purchasebasketsize),productcompetency=mean(productcompetency),servicecompetency=mean(servicecompetency))
+
+```
+#merging MonthlyHRaggregate and uniqueHRdata
+```{r}
+FinalHRdata<- merge(monthlyHRaggregate, uniqueHRdata, by=c("sales_assoc_1"), all=TRUE)
+
+#renaming count variable as monthlypurchases
+colnames(FinalHRdata)[colnames(FinalHRdata)=="count"]<-"monthlyPurchases"
+
+#Adding fiscal year column in Final HR data
+FinalHRdata$month_num <- ((FinalHRdata$month_index+7) %% 12)
+FinalHRdata$month_num<- ifelse(FinalHRdata$month_num==0,12,FinalHRdata$month_num)
+FinalHRdata$fiscalyear<-ifelse(FinalHRdata$month_num==8,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==9,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==10,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==11,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==12,(FinalHRdata$year+1),FinalHRdata$year)))))
+```
+#Merging Model1 Training data(with dummy training variable) and FinalHR data
+```{r}
+#creating a year column for the year of training of a particular sales associate
+Training12$fiscalyear<-2012
+
+# changing column name from EID to sales_assoc_1 as in HR data
+colnames(Training12)[4]<-"sales_assoc_1"
+
+#creating a year column for the year of training of a particular sales associate in Training13 data
+Training13$fiscalyear<-2013
+
+# Making the column names of training 13 data consistent with with training 12 data 
+colnames(Training13)[colnames(Training13)=="Warranties"]<-"Warranty"
+colnames(Training13)[colnames(Training13)=="Sp. Events"]<-"Spec. Ev."
+colnames(Training13)[colnames(Training13)=="EID"]<-"sales_assoc_1"
+
+#Adding new training modules(as in training13 data) to training12 data with NA values so that we can append the training13 data to training12 data.
+Training12$`Celebrity Brand`<-NA
+Training12$Celebration <-NA
+Training12$Watches <-NA
+Training12$Color <-NA
+Training12$`Service & Selling` <-NA
+
+#Merging both training data sets
+Model1Trainingdata <- rbind(Training12, Training13)
+
+#adding the dummy training variable
+Model1Trainingdata$training<- 1
+
+#creating a subset of Trainingdata which doesnot include store#,state,assignment category. Because this info. is present in HR data.so dont want redundant data.
+subsetTraining<-Model1Trainingdata[c("Status","sales_assoc_1","Job Name","Start Date","Rehire","Warranty","Credit","Spec. Ev.","Celebrity Brand","Celebration","Watches","Color","Service & Selling","fiscalyear","training")]
+
+#Merging SubsetTraining with FinalHRdata
+Model1data<-merge(FinalHRdata, subsetTraining, by=c("sales_assoc_1", "fiscalyear"),all=TRUE)
+
+#Merge added extra 8 rows. Removing them where month_index is na.
+Model1data<-Model1data[!is.na(Model1data$month_index), ]
+
+#Making NA training value to 0 
+Model1data$training<- ifelse(is.na(Model1data$training),0,1)
+```
+#Merging store attributes with Model1data
+```{r}
+Mod1data<-merge(Model1data, store, by=c("store_number"),all=TRUE)
+Mod1data$MajorCompetitorPresent<-ifelse(Mod1data$MajorCompetitorPresent=="Yes",1,0)
+#removing data of 2011 and 2014 
+Mod1data<-subset(Mod1data,fiscalyear!=2011)
+Mod1data<-subset(Mod1data,fiscalyear!=2014)
+
+```
+
+## Summary statistics
+```{r}
+print(summary(Mod1data))
+hist(Mod1data$monthlysales) 
+hist(log(Mod1data$monthlysales+1))# we will use the log transformed variable
+boxplot(Mod1data$training, log(Model1data$monthlysales+1))#independent and dependent variable plot
+```
+
+## Check Multicollineary
+```{r}
+#Multicollinearity
+install.packages("VIF")
+library(VIF)
+library(usdm)
+
+df1=data.frame(Mod1data$training,Mod1data$meanAgeBand,Mod1data$meanIncomeCode,Mod1data$MeanFemales,Mod1data$MeanMales,Mod1data$SA_rateofPay,Mod1data$meanChild,Mod1data$meanHomeowners,Mod1data$fiscalyear, Mod1data$month_num, Mod1data$SA_serviceyears, Mod1data$TotalCases)
+
+cor(df1)
+vif(df1)
+
+```
+# 1st Model
+```{r}
+logmonthlysales<-log(Mod1data$monthlysales+1)
+#creating a dummy variable for fiscal year
+Mod1data$fiscaldummy<-ifelse(Mod1data$fiscalyear==2012,0,1)
+#creating a dummy variable for SA_gender
+Mod1data$SA_gender1<-ifelse(Mod1data$SA_gender=="M",0,1)
+#creating a dummy variable for assignment category
+Mod1data$assignmentcategory<-ifelse(Mod1data$SA_AssignmentCategory=="FR",1, ifelse(Mod1data$SA_AssignmentCategory=="FT",1,0))
+#creating a dummy variable for SA_dependent
+Mod1data$SA_Dependent1<-ifelse(Mod1data$SA_Dependent=="Yes",1,0)
+
+Model1<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases, data=Mod1data)#ST represents state like AZ,FL,etc 
+print(summary(Model1))
+
+#Model with SA_gender
+Model1A<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1, data=Mod1data)
+
+print(summary(Model1A))
+
+library(lmtest)
+anova(Model1,Model1A, test="Chisq")#Model1A selected
+
+#Model with SA_AssignmentCategory
+Model1B<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory, data=Mod1data)
+print(summary(Model1B))
+
+library(lmtest)
+anova(Model1A,Model1B, test="Chisq")#Model1B selected
+
+#Model with SA_maritalstatus
+Model1C<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+SA_MartialStatus, data=Mod1data)
+print(summary(Model1C)) 
+
+anova(Model1B,Model1C, test="Chisq")#Model1B selected
+
+#Model with StoreSqFt
+Model1D<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+StoreSqFt, data=Mod1data)
+
+print(summary(Model1D)) 
+
+anova(Model1D,Model1B, test="Chisq")#Model1B selected
+
+#Model with MajorCompetitorPresent, 
+Model1E<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent, data=Mod1data)
+print(summary(Model1E)) 
+
+anova(Model1E,Model1B, test="Chisq")#Model1E is selected
+
+#Model with MallSalesSF
+Model1F<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+MallSalesSF, data=Mod1data)
+print(summary(Model1F)) 
+
+anova(Model1E,Model1F, test="Chisq")#Model1E is selected
+
+#Model with PadCount
+Model1G<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+PadCount, data=Mod1data)
+print(summary(Model1G)) 
+
+anova(Model1G,Model1E, test="Chisq")#Model1E is selected
+
+#Model with SA_Dependent 
+Model1H<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod1data)
+print(summary(Model1H)) 
+
+anova(Model1E,Model1H, test="Chisq")#Model1H is selected
+
+#Model without meanHomeOwners 
+Model1I<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod1data)
+print(summary(Model1I)) 
+
+anova(Model1I,Model1H, test="Chisq")#Model1I is selected
+
+#Model without meanChild 
+Model1J<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod1data)
+print(summary(Model1J)) #Trained sales associates are associated with 129% higher sales than untrained sales associates, keeping other variables constant. 
+
+anova(Model1I,Model1J, test="Chisq")#Model1J is selected
+```
+#Test for Heteroskedasticity
+```{r}
+#Model 1:
+logmonthlysales<-log(Mod1data$monthlysales+1)
+pred<-predict(lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod1data)) #obtain fitted values
+res=resid(Model1J) # obtain residuals
+plot(pred,res, ylab="Residuals", xlab="Fitted values")
+
+gqtest(Model1J)#p-value is insignificant.GQ test result says that there is 
+bptest(Model1J)# p-value is significant. So, there is heteroskedasticity
+
+#boxplot(logmonthlysales~Mod1data$ST)
+
+library(sandwich)
+library(foreign)
+coeftest(Model1J, vcov = vcovHC(Model1J, "HC1"))#So, need to use robust standard errors.
+summary(Model1J)
+# May have heteroskedasticity because different states
+#install.packages("multiwayvcov")
+#library(multiwayvcov)
+#Model1J.vcovCL<-cluster.vcov(Model1J,Mod1data$ST ) # Generates robust standard errors clustered at Region level
+#oeftest(Model1J, Model1J.vcovCL) # displays clustered robust standard errors. With robust standard errors, we find that two variables are no longer significant
+#print(summary(Model1J))
+```
+#endogenity
+```{r}
+library(AER)
+library(foreign)
+Mod1data$SA_MartialStatus<-ifelse(Mod1data$SA_MartialStatus=="M",1,0)
+
+model1iv1<- ivreg(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1|SA_MartialStatus+MallSalesSF+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1,data=Mod1data)
+summary(model1iv1,diagnostics = TRUE)# the impact of endogenity is negligible
+
+
+```
+
+#Merging Model2 Training data(with count of no.of trainings taken(training completed variable) and FinalHR data
+```{r}
+library(readxl)
+Model2Trainingdata=read_excel("Model2_T12_T13.xlsx")
+
+#renaming the column heads
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Warranties"]<-"Warranty"
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Sp. Events"]<-"Spec. Ev."
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="EID"]<-"sales_assoc_1"
+
+#creating a subset of Model2Trainingdata which doesnot include store#,state,assignment category. Because this info. is present in HR data.so dont want redundant data.
+subsetTraining<-Model2Trainingdata[c("Status","sales_assoc_1","Job Name","Start Date","Rehire","Warranty","Credit","Spec. Ev.","Celebrity Brand","Celebration","Watches","Color","Service & Selling","fiscalyear","TrainingAvailable","TrainingCompleted")]
+
+#Merging SubsetTraining with FinalHRdata
+Model2data<-merge(FinalHRdata, subsetTraining, by=c("sales_assoc_1", "fiscalyear"),all=TRUE)
+
+#Merge added extra 8 rows. Removing them where month_index is na.
+Model2data<-Model2data[!is.na(Model2data$month_index), ]
+
+#Making NA training value to 0 
+Model2data$TrainingCompleted<- ifelse(is.na(Model2data$TrainingCompleted),0,Model2data$TrainingCompleted)
+
+```
+#Merging store attributes with Model2data
+```{r}
+Mod2data<-merge(Model2data, store, by=c("store_number"),all=TRUE)
+#removing data of 2011 and 2014 
+Mod2data<-subset(Mod2data,fiscalyear!=2011)
+Mod2data<-subset(Mod2data,fiscalyear!=2014)
+Mod2data$TrainingRatio<- Mod2data$TrainingCompleted/Mod2data$TrainingAvailable
+```
+
+## Summary statistics
+```{r}
+print(summary(Mod2data))
+
+hist(Mod2data$monthlysales) 
+hist(log(Mod2data$monthlysales+1))# we will use the log transformed variable
+
+hist(Mod2data$TrainingCompleted) # we will use the original variable
+hist(log(1+Mod2data$TrainingCompleted)) 
+
+hist(Mod2data$TrainingAvailable) # we will use the original variable
+hist(log(1+Mod2data$TrainingAvailable)) 
+
+```
+## Check Multicollineary
+```{r}
+#Multicollinearity
+# We need to install VIF package everytime we run otherwise R throws some error.
+install.packages("VIF")
+library(VIF)
+library(usdm)
+df1=data.frame(Mod2data$TrainingCompleted,Mod2data$TrainingAvailable,Mod2data$meanAgeBand,Mod2data$meanIncomeCode,Mod2data$MeanFemales,Mod2data$MeanMales,Mod2data$SA_rateofPay,Mod2data$fiscalyear, Mod2data$month_num, Mod2data$SA_serviceyears, Mod2data$TotalCases)
+vif(df1) #removing TrainingAvailable
+cor(df1)
+df2=data.frame(Mod2data$TrainingCompleted,Mod2data$meanAgeBand,Mod2data$meanIncomeCode,Mod2data$MeanFemales,Mod2data$MeanMales,Mod2data$SA_rateofPay,Mod2data$fiscalyear, Mod2data$month_num, Mod2data$SA_serviceyears, Mod2data$TotalCases)
+vif(df2)
+cor(df2)
+```
+
+# 2nd Model
+```{r}
+factormonth_num<-factor(Mod2data$month_num)
+factorST<-Mod2data$ST
+factormallgrade<-Mod2data$MallGrade
+#creating a dummy variable for fiscal year
+Mod2data$fiscaldummy<-ifelse(Mod2data$fiscalyear==2012,0,1)
+#creating a dummy variable for SA_gender
+Mod2data$SA_gender1<-ifelse(Mod2data$SA_gender=="M",0,1)
+#creating a dummy variable for assignment category
+Mod2data$assignmentcategory<-ifelse(Mod2data$SA_AssignmentCategory=="FR",1, ifelse(Mod2data$SA_AssignmentCategory=="FT",1,0))
+#creating a dummy variable for SA_dependent
+Mod2data$SA_Dependent1<-ifelse(Mod2data$SA_Dependent=="Yes",1,0)
+
+logmonthlysales<-log(Mod2data$monthlysales+1)
+Model2<-lm(logmonthlysales~TrainingCompleted+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factormonth_num+fiscaldummy+factorST+factormallgrade+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod2data)
+print(summary(Model2))#As the no. of training taken increases, sales associates are associated with 0.215 higher sales, keeping other variables constant  
+
+#model with quadratic training term
+Model2A<-lm(logmonthlysales~I(TrainingCompleted^2)+TrainingCompleted+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factormonth_num+fiscaldummy+factorST+factormallgrade+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod2data)
+print(summary(Model2A))
+
+anova(Model2,Model2A, test="Chisq")# Model2A is picked
+
+install.packages("effects") #we need to install this package to generate marginal effects
+library(effects)
+
+plot(effect(term="TrainingCompleted", mod=Model2A))
+# we can see from the plot that after taking 5 trainings the impact of training on sales is not so much.
+```
+#Test for Heteroskedasticity
+```{r}
+library(lmtest)
+gqtest(Model2A)#p-value is insignificant.GQ test result says that there is 
+bptest(Model2A)# p-value is significant. So, there is heteroskedasticity
+library(sandwich)
+library(foreign)
+coeftest(Model2A, vcov = vcovHC(Model2A, "HC1"))#So, need to use robust standard errors.
+summary(Model2A)
+```
+#endogenity
+```{r}
+library(AER)
+library(foreign)
+Mod2data$SA_MartialStatus<-ifelse(Mod1data$SA_MartialStatus=="M",1,0)
+
+model2iv1<- ivreg(logmonthlysales~TrainingCompleted+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1|SA_MartialStatus+MallSalesSF+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factor(month_num)+fiscaldummy+factor(ST)+factor(MallGrade)+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1,data=Mod2data)
+summary(model2iv1,diagnostics = TRUE)# the impact of endogenity is negligible
+
+```
+# Model4 with all the modules as dummies.
+
+# 4th Model
+```{r}
+colnames(Mod2data)[colnames(Mod2data)=="Service & Selling"]<-"service"
+colnames(Mod2data)[colnames(Mod2data)=="Celebrity Brand"]<-"CelebrityBrand"
+colnames(Mod2data)[colnames(Mod2data)=="Spec. Ev."]<-"SpecEv"
+#Making NA training value to 0 
+Mod2data$Warranty<- ifelse(is.na(Mod2data$Warranty),0,1)
+Mod2data$Credit<- ifelse(is.na(Mod2data$Credit),0,1)
+Mod2data$Color<- ifelse(is.na(Mod2data$Color),0,1)
+Mod2data$service<- ifelse(is.na(Mod2data$service),0,1)
+Mod2data$Celebration<- ifelse(is.na(Mod2data$Celebration),0,1)
+Mod2data$Watches<- ifelse(is.na(Mod2data$Watches),0,1)
+Mod2data$CelebrityBrand<- ifelse(is.na(Mod2data$CelebrityBrand),0,1)
+Mod2data$SpecEv<- ifelse(is.na(Mod2data$SpecEv),0,1)
+logmonthlysales<-log(Mod2data$monthlysales+1)
+factormonth_num<-Mod2data$month_num
+factorST<-Mod2data$ST
+factormallgrade<-Mod2data$MallGrade
+
+Model4<-lm(logmonthlysales~Warranty+Credit+Color+service+Celebration+Watches+CelebrityBrand+SpecEv+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+factormonth_num+factorST+factormallgrade+TotalCases+SA_gender1+assignmentcategory+MajorCompetitorPresent+SA_Dependent1, data=Mod2data)
+print(summary(Model4))
+# the training modules are highly correlated with each other. Hence, R estimates beta values for only 1 module. Sales Associates trained in warranty are associated with 125.9% higher sales than sales associates who are not trained in warranty.
+
+```
+#Test for Heteroskedasticity
+```{r}
+library(lmtest)
+gqtest(Model4)#p-value is insignificant.GQ test result says that there is 
+bptest(Model4)# p-value is significant. So, there is heteroskedasticity
+library(sandwich)
+library(foreign)
+coeftest(Model4, vcov = vcovHC(Model4, "HC1"))#So, need to use robust standard errors.
+summary(Model4)
+```
+
+#endogenity
+```{r}
+#under-indentified cases
+```
+
+
+

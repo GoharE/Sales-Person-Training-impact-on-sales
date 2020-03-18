@@ -1,0 +1,336 @@
+---
+title: "Final Project" 
+Question 2: "The impact of the Sales person training on the monthly returns.""
+author: "Gohar Eloyan"
+date: "November 30, 2017"
+output: html_document
+---
+
+install.packages("eeptools")
+library(eeptools)
+install.packages("dplyr")
+library(dplyr)
+install.packages("readxl")
+install.packages("data.table")
+library(data.table)
+library(ggplot2)
+library(sandwich)
+install.packages("msm")
+library(msm)
+
+## Set the directory
+```{r}
+setwd("~/Desktop/SCU Files/OMIS Econometrics with R/Final project/Salesperson Training Project")
+```
+
+## Loading the data
+```{r}
+d = read.table("sample.txt", 
+               sep="\t", 
+               header=TRUE, 
+               fill=FALSE, 
+               strip.white=TRUE)
+hrdata=read.table("Transaction-HR data FY11-FY14.txt",
+                   sep="\t",
+                   header=TRUE,
+                   fill=FALSE,
+                 strip.white=TRUE)
+
+library(readxl)
+Training12=read_excel("t12model1.xlsx")
+Training13=read_excel("t13model1.xlsx")
+store=read.csv("Store attributes.csv", sep=",")
+survey=read.csv("Survey data.csv")
+```
+
+## Merging survey data with hrdata
+```{r}
+## Changing 'No=2 to No=0'and 'do not recall=9 to do not recall=NA' for columns7,8,19
+survey$greetedbinary<- ifelse(survey$greetedbinary==9,NA,ifelse(survey$greetedbinary==2,0,1))
+survey$jcdiscussedcreditoptionsbinary<- ifelse(survey$jcdiscussedcreditoptionsbinary==9,NA,ifelse(survey$jcdiscussedcreditoptionsbinary==2,0,1))
+survey$informedeventbinary<- ifelse(survey$informedeventbinary==2,0,1)
+
+## Creating survey score(total of scores per transaction)
+survey$surveyscore<- rowSums(survey[7:19],na.rm=TRUE)
+
+## Renaming "purchase transaction amount" to "net_purchase_amount"
+colnames(survey)[colnames(survey)=="purchasetransactionamount"]<-"net_purchase_amount"
+
+## Checking for duplicate transactions per year
+uniqueTransHRdata<-distinct(hrdata)#there were 76,693 duplicate rows.
+
+HRdataSurvey<- merge(uniqueTransHRdata, survey, by=c("customer_id","net_purchase_amount","transaction_id","purchase_date","store_number"), all=TRUE)
+
+## Merge added extra 413 rows. Removing them.
+HRdataSurvey<-HRdataSurvey[!is.na(HRdataSurvey$sales_assoc_1), ]
+```
+
+## Distinct  sales associate dataset from HR
+```{r}
+subsetHRdata<- HRdataSurvey[c("sales_assoc_1","SA_gender","SA_AssignmentCategory","SA_MartialStatus","SA_Dependent")]
+library(dplyr)
+uniqueHRdata<-distinct(subsetHRdata)
+```
+
+## Monthly HR data
+```{r}
+## Creating dummy variables for gender of customers
+HRdataSurvey$female<-ifelse(HRdataSurvey$gender=="F",1,0)
+HRdataSurvey$male<-ifelse(HRdataSurvey$gender=="M",1,0)
+
+## Creating dummy variable for home owner code
+HRdataSurvey$homeowners<-ifelse(HRdataSurvey$homeowner_code=="O",1,0)
+
+## Creating dummy variable for child of a customer
+HRdataSurvey$child<-ifelse(HRdataSurvey$child=="Y",1,0)
+
+#monthly sales per sales associate per store, total no.of monthly returns per store per sales associate,mean of age band of customers dealt by a sales associate during a particular month per store,mean of income band of customers dealt by a sales aassociate during a particular month per store,total no. of females making purchases during a month per sales associate per store,total no. of males making purchases during a month per sales associate per store,sales associate service years as of that month, sales associate's rate of pay for that particular month and  count variable gives the total no. of purchases made during a particular month,meanChild,meanHomeowners,year of transaction per sales associate per store per monthindex mean of surveyscores, mean of purchase basket size
+monthlyHRaggregate=HRdataSurvey %>% group_by(sales_assoc_1,month_index,store_number) %>% summarise(year=mean(year),monthlysales=sum(net_purchase_amount),monthlyreturn=sum(return),meanAgeBand=mean(age_band),meanIncomeCode=mean(est_income_code),MeanFemales=mean(female), MeanMales=mean(male),SA_serviceyears=mean(SA_YearsofService),SA_rateofPay=mean(SA_RateofPay),meanChild=mean(child),meanHomeowners=mean(homeowners),count=n(),meanPurchaseBasketSize=mean(purchasebasketsize),meanSurveyScore=mean(surveyscore))
+
+#monthlyHRaggregate=d %>% group_by(sales_assoc_1,month_index,store_number) %>% mutate(count=n())
+```
+
+## Merging MonthlyHRaggregate and uniqueHRdata
+```{r}
+FinalHRdata<- merge(monthlyHRaggregate, uniqueHRdata, by=c("sales_assoc_1"), all=TRUE)
+
+## Renaming count variable as monthlypurchases
+colnames(FinalHRdata)[colnames(FinalHRdata)=="count"]<-"monthlyPurchases"
+
+## Adding fiscal year column in Final HR data
+FinalHRdata$month_num <- ((FinalHRdata$month_index+7) %% 12)
+FinalHRdata$month_num<- ifelse(FinalHRdata$month_num==0,12,FinalHRdata$month_num)
+FinalHRdata$fiscalyear<-ifelse(FinalHRdata$month_num==8,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==9,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==10,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==11,(FinalHRdata$year+1),ifelse(FinalHRdata$month_num==12,(FinalHRdata$year+1),FinalHRdata$year)))))
+```
+
+#Merging Model1 Training data(with dummy training variable) and FinalHR data
+```{r}
+## Creating a year column for the year of training of a particular sales associate
+Training12$fiscalyear<-2012
+
+## Changing column name from EID to sales_assoc_1 as in HR data
+colnames(Training12)[4]<-"sales_assoc_1"
+
+## Creating a year column for the year of training of a particular sales associate in Training13 data
+Training13$fiscalyear<-2013
+
+## Making the column names of training 13 data consistent with with training 12 data 
+colnames(Training13)[colnames(Training13)=="Warranties"]<-"Warranty"
+colnames(Training13)[colnames(Training13)=="Sp. Events"]<-"Spec. Ev."
+colnames(Training13)[colnames(Training13)=="EID"]<-"sales_assoc_1"
+
+## Adding new training modules(as in training13 data) to training12 data with NA values so that we can append the training13 data to training12 data.
+Training12$`Celebrity Brand`<-NA
+Training12$Celebration <-NA
+Training12$Watches <-NA
+Training12$Color <-NA
+Training12$`Service & Selling` <-NA
+
+## Merging both training data sets
+Model1Trainingdata <- rbind(Training12, Training13)
+
+## Adding the dummy training variable
+Model1Trainingdata$training<- 1
+
+## Creating a subset of Trainingdata which doesnot include store#,state,assignment category. Because this info. is present in HR data.so dont want redundant data.
+subsetTraining<-Model1Trainingdata[c("Status","sales_assoc_1","Job Name","Start Date","Rehire","Warranty","Credit","Spec. Ev.","Celebrity Brand","Celebration","Watches","Color","Service & Selling","fiscalyear","training")]
+
+## Merging SubsetTraining with FinalHRdata
+Model1data<-merge(FinalHRdata, subsetTraining, by=c("sales_assoc_1", "fiscalyear"),all=TRUE)
+
+## Merge added extra 8 rows. Removing them where month_index is na.
+Model1data<-Model1data[!is.na(Model1data$month_index), ]
+
+## Making NA training value to 0 
+Model1data$training<- ifelse(is.na(Model1data$training),0,1)
+```
+
+## Merging store attributes with Model1data
+```{r}
+Mod1data<-merge(Model1data, store, by=c("store_number"),all=TRUE)
+#removing data of 2011 and 2014 
+Mod1data<-subset(Mod1data,fiscalyear!=2011)
+Mod1data<-subset(Mod1data,fiscalyear!=2014)
+```
+
+## Merging Model2 Training data(with count of no.of trainings taken(training completed variable) and FinalHR data
+```{r}
+Model2Trainingdata=read_excel("Model2_T12_T13.xlsx") ## Reading the file.
+
+#renaming the column heads
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Warranties"]<-"Warranty"
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Sp. Events"]<-"Spec. Ev."
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="EID"]<-"sales_assoc_1"
+
+## Creating a subset of Model2Trainingdata which doesnot include store#,state,assignment category. Because this info. is present in HR data.so dont want redundant data.
+subsetTraining<-Model2Trainingdata[c("Status","sales_assoc_1","JobName","Start Date","Rehire","Warranty","Credit","Spec. Ev.","Celebrity Brand","Celebration","Watches","Color","Service & Selling","fiscalyear","TrainingAvailable","TrainingCompleted")]
+
+## Merging SubsetTraining with FinalHRdata
+Model2data<-merge(FinalHRdata, subsetTraining, by=c("sales_assoc_1", "fiscalyear"),all=TRUE)
+
+## Merge added extra 8 rows. Removing the extra rows where month_index is na.
+library(dplyr)
+Model2data<-Model2data[!is.na(Model2data$month_index), ]
+
+#Making NA training value to 0 
+Model2data$TrainingCompleted<- ifelse(is.na(Model2data$TrainingCompleted),0,Model2data$TrainingCompleted)
+```
+
+#Merging store attributes with Model1data
+```{r}
+Mod2data<-merge(Model2data, store, by=c("store_number"),all=TRUE)
+#removing data of 2011 and 2014 
+Mod2data<-subset(Mod2data,fiscalyear!=2011)
+Mod2data<-subset(Mod2data,fiscalyear!=2014)
+Mod2data$TrainingRatio<- Mod2data$TrainingCompleted/Mod2data$TrainingAvailable
+Mod2data$returnratio<- Mod2data$monthlyreturn/Mod2data$monthlyPurchases
+```
+
+## Question 2: The impact of the Sales person training on the monthly returns.
+
+## With Trainingcompleted(Ranges from 0 to 8) as the key indipendent variable
+```{r}
+##Summary Statistics 
+print(summary(Mod2data))
+head(Mod2data$monthlyreturn) # view the first few rows of the data
+hist(Mod2data$TrainingCompleted)# considering the raw variable
+hist(log(Mod2data$TrainingCompleted))
+hist(log(Mod2data$TrainingCompleted+1))
+boxplot(Mod2data$monthlyreturn, Mod2data$TrainingCompleted)
+boxplot(Mod2data$monthlyreturn, Mod2data$fiscalyear)
+```
+
+## Changing the factor variables to dummy variables.
+```{r}
+Model2data$SA_gender<-ifelse(Model2data$SA_gender=="F",1,0)
+Model2data$SA_Dependent<-ifelse(Model2data$SA_Dependent=="Yes",1,0)
+Model2data$SA_AssignmentCategory<-ifelse(Model2data$SA_AssignmentCategory=="FR"||"FT",1,0)
+Model2data$SA_MartialStatus<-ifelse(Model2data$SA_MartialStatus=="M",1,0)
+Mod2data$MajorCompetitorPresent<-ifelse(Mod2data$MajorCompetitorPresent=="Yes",1,0)
+```
+
+## Test for Multicollinearity
+```{r}
+install.packages("VIF")
+install.packages("usdm")
+library(usdm)
+library(VIF)
+df2=data.frame(Mod2data$meanAgeBand,Mod2data$meanIncomeCode,Mod2data$MeanFemales,Mod2data$SA_rateofPay,Mod2data$meanChild,Mod2data$meanHomeowners, Mod2data$month_num, Mod2data$SA_serviceyears, Mod2data$TotalCases, Mod2data$fiscalyear, Mod2data$TrainingCompleted, Mod2data$sales_assoc_1, Mod2data$store_number,Mod2data$MallSalesSF,Mod2data$PadCount,Mod2data$StoreSqFt,Mod2data$MeanMales, Mod2data$monthlyPurchases) ## don't include monthlysales.
+
+vif(df2)
+cor(df2)
+```
+
+##Different models with various variables as control variables.
+```{r}
+## Trial model with everything
+summary(ModelR2<-glm(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+
+                       MeanFemales+MeanMales+factor(SA_serviceyears)+SA_rateofPay+meanChild+
+                       meanHomeowners+SA_gender+SA_AssignmentCategory+SA_MartialStatus+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+StoreSqFt+TotalCases+MajorCompetitorPresent+SA_Dependent,family="poisson", data=Mod2data))
+
+## With Fiscal year, without Training Available
+summary(ModelR21<-glm.nb(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent,data=Mod2data))
+
+library(foreign)
+library(MASS)
+AIC(ModelR2,ModelR21)
+BIC(ModelR2,ModelR21) # Choose ModelR21
+
+## With Training Completed and Without Fiscal Year
+summary(ModelR22<-glm.nb(monthlyreturn~TrainingCompleted+TrainingAvailable+meanAgeBand+meanIncomeCode+
+                       MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+
+                       SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+
+                       factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent,
+                       data=Mod2data))
+
+AIC(ModelR21,ModelR22)
+BIC(ModelR21,ModelR22) # Choose ModdelR22
+
+## With StoreSqFT
+summary(ModelR23<-glm.nb(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt, data=Mod2data))
+
+anova(ModelR22, ModelR23, test="Chisq") # This shows ModelR23 (with StoreSqFT) is better as the chi square test is significant.
+
+## With PadCount
+summary(ModelR24<-glm.nb(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+PadCount, data=Mod2data))
+
+anova(ModelR23, ModelR24, test="Chisq") ## This shows ModelR24 (with PadCount) is not improving our model as the chi square test is not significant. So, choose ModelR23
+
+## With SA_MartialStatus 
+summary(ModelR25<-glm.nb(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_MartialStatus, data=Mod2data))
+
+anova(ModelR23, ModelR25, test="Chisq") ## This shows ModelR25 (with SA_MartialStatus) is not improving our model as the chi square test is not significant.So Choose ModelR23.
+
+## With SA_dependent added (My final model)
+summary(ModelR212<-glm.nb(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent,data=Mod2data))
+
+anova(ModelR23, ModelR212, test="Chisq") ## Go with ModelR212
+
+## Model fit assessment for NB, ModelR212.
+install.packages("lmtest")
+library(lmtest)
+
+with(ModelR212, null.deviance - deviance)
+with(ModelR212, df.null - df.residual)
+with(ModelR212, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+##We conclude that the model does fit because the goodness-of-fit chi-squared test is 474.2793 and statistically significant. 
+
+## Poisson for ModelR212
+summary(ModelR212P<-glm(monthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent, family="poisson",data=Mod2data))
+
+## Model fit assessment for Poisson.
+install.packages("lmtest")
+library(lmtest)
+
+with(ModelR212P, null.deviance - deviance)
+with(ModelR212P, df.null - df.residual)
+with(ModelR212P, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+##We conclude that the model does not fit because the goodness-of-fit chi-squared test is 1469.103 and statistically significant. For Poisson models we need it to be insignificant, in order to conclude the model fits the data.
+
+## Comparing NB and Poisson models.
+X2 <- 2 * (logLik(ModelR212) - logLik(ModelR212P))
+X2
+pchisq(X2, df = 1, lower.tail=FALSE) ## Negative binomial is the right model,since the chi sq test is significant, showing that the model that has extra variable(NB) is better. So we'll go with it.
+```
+
+## Heteroskedastisity test
+```{r}
+install.packages("msm")
+library(msm)
+
+res=resid(ModelR212)
+pred=predict(ModelR212)
+plot(pred, res, ylab="Residuals", xlab="Fitted values") ## ???
+
+gqtest(ModelR212) # Goldfeld-Quandt test statistic is not significant, which indicates there is not heteroscedasticity
+bptest(ModelR212) # Breusch-Pagan test indicates heteroscedasticity.So in the next step we will creat Robust Standard Errors.
+
+rexp.est <- exp(coef(ModelR212)) # exponentiate old estimates dropping the p values
+## rexp.est[, "Robust SE"] <- s # eplace SEs with estimates for exponentiated coefficients. We got an error here, and after communicating it with the professor, we were advised to remove it from the code. That's why we  didn't obtain the confidence intervals for the error terms.
+rexp.est # demonstrate IRRs. As the the sales associate gets more training the monthly returns increase by approximately 16%. At first, it can seem somehow counterintuitive. But we need to remember that monthly sales increase too, so the returns are increasing as the sales are encreasing. To check this we run OLS regression with return ratio(monthly returns/monthly purchases) as our dependent variable.
+```
+
+## OLS model with return ratio as our dependent variable.
+```{r}
+## OLS Model with Returnratio (monthlyreturn/monthlyPurchases) as a dependent variable.
+summary(ModelR212<-lm(returnratio~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent,data=Mod2data)) ## The Training Completed variable is not significant, indicating the fact how much the sales associate is trained has no impact on return ratio, consequantly on monthly return.
+```
+
+## Endogeneity test. 
+```{r}
+## Histogram for monthlyreturn. Decided to go with log(monthlyreturn+1).
+hist(Mod2data$monthlyreturn)
+hist(log(Mod2data$monthlyreturn))
+hist(log(Mod2data$monthlyreturn+1))
+Mod2data$logmonthlyreturn<-log(Mod2data$monthlyreturn+1)
+
+summary(ModelR215<-lm(Mod2data$logmonthlyreturn~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent,data=Mod2data)) ##Even though the coefficients are not comparable for OLS and NB models,nevertheless, we'll run the endogeneity test for OLS. 
+
+library(AER)
+library(foreign)
+
+## 2SLS estimator for ModelR215
+summary(ModelR215IV<-ivreg(log(Mod2data$monthlyreturn+1)~TrainingCompleted+factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent|factor(fiscalyear)+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+SA_gender+SA_AssignmentCategory+factor(month_num)+factor(ST)+factor(MallGrade)+MallSalesSF+TotalCases+MajorCompetitorPresent+StoreSqFt+SA_Dependent+ TrainingAvailable+ SA_MartialStatus ,data=Mod2data)) ## Over-identified 2SLS estimator with TrainingAvailable and SA_MartialStatus as instrumental variables.
+
+summary(ModelR215IV,diagnostics = TRUE) ## The Weak instruement statistic is greater than 10, and significant, which means the instruments are well chosen. Sargan test is significant, showing that the instruments are not correlated with the dependent variable. And finally the Wu-Hausman test is insignificant, which means that the endogenity impact on the model is negligible. SO we will go with the OLS ModelR215, that means we'll use IRR results.
+```

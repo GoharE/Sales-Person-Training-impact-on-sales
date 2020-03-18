@@ -1,0 +1,535 @@
+---
+title: "Finalprojsurvey"
+author: "Sikha"
+output:
+  word_document: default
+  html_document: default
+---
+## Set the directory
+```{r}
+setwd("C:/Users/sikha/Desktop/R-SIKHA/Final Project")
+```
+
+## Libraryran
+```{r}
+
+library(eeptools)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(sandwich)
+library(msm)
+
+```
+
+#loading the data
+```{r}
+
+hrdata=read.table("Transaction-HR data FY11-FY14.txt",
+                   sep="\t",
+                   header=TRUE,
+                   fill=FALSE,
+                 strip.white=TRUE)
+
+library(readxl)
+Training12=read_excel("t12model1.xlsx")
+Training13=read_excel("t13model1.xlsx")
+store=read.csv("Store attributes.csv", sep=",")
+survey=read.csv("Survey data.csv")
+```
+# Merging survey data with hrdata
+```{r}
+#changing 'No=2 to No=0'and 'do not recall=9 to do not recall=NA' for columns7,8,19
+#survey$greetedbinary<-ifelse(survey$greetedbinary==9,NA,ifelse(survey$greetedbinary==2,0,1))
+#survey$jcdiscussedcreditoptionsbinary<-ifelse(survey$jcdiscussedcreditoptionsbinary==9,NA,ifelse(#survey$jcdiscussedcreditoptionsbinary==2,0,1))
+#survey$informedeventbinary<- ifelse(survey$informedeventbinary==2,0,1)
+
+#creating survey score(total of scores per transaction)
+#survey$surveyscore<- rowSums(survey[7:19],na.rm=TRUE)
+
+survey$servicecompetency<-rowMeans(survey[,c("sh1","sh2","sh3","sh4","sh5","pressure")],na.rm=TRUE)
+survey$productcompetency<-rowMeans(survey[,c("sc1","sc2","sc3","sc4")],na.rm=TRUE)
+
+#renaming "purchase transaction amount" to "net_purchase_amount"
+colnames(survey)[colnames(survey)=="purchasetransactionamount"]<-"net_purchase_amount"
+
+library(dplyr)
+# checking for duplicate transactions per year
+uniqueTransHRdata<-distinct(hrdata)#there were 76,693 duplicate rows.
+
+## Merging Trans HR data with survey
+HRdataSurvey<- merge(uniqueTransHRdata, survey, by=c("customer_id","net_purchase_amount","transaction_id","purchase_date","store_number"), all=TRUE)
+
+#Merge added extra 413 rows. Removing them.
+HRdataSurvey<-HRdataSurvey[!is.na(HRdataSurvey$sales_assoc_1), ]
+
+## Removing extra data from HR data that didn't have survey scores.
+HRdataSurvey1<-HRdataSurvey
+HRdataSurvey12<-HRdataSurvey1[!is.na(HRdataSurvey1$productcompetency), ]
+```
+#distinct  sales associate dataset from HRdataSurvey12
+```{r}
+subsetHRdataS<- HRdataSurvey12[c("sales_assoc_1","SA_gender","SA_AssignmentCategory","SA_MartialStatus","SA_Dependent")]
+library(dplyr)
+uniqueHRdataS<-distinct(subsetHRdataS)
+
+#creating dummy variables for gender of customers
+HRdataSurvey12$female<-ifelse(HRdataSurvey12$gender=="F",1,0)
+HRdataSurvey12$male<-ifelse(HRdataSurvey12$gender=="M",1,0)
+
+#creating dummy variable for home owner code
+HRdataSurvey12$homeowners<-ifelse(HRdataSurvey12$homeowner_code=="O",1,0)
+
+#creating dummy variable for child of a customer
+HRdataSurvey12$child<-ifelse(HRdataSurvey12$child=="Y",1,0)
+
+monthlyHRaggregate12=HRdataSurvey12 %>% group_by(sales_assoc_1,month_index,store_number) %>% summarise(year=mean(year),monthlysales=sum(net_purchase_amount),monthlyreturn=sum(return),meanAgeBand=mean(age_band),meanIncomeCode=mean(est_income_code),MeanFemales=mean(female), MeanMales=mean(male),SA_serviceyears=mean(SA_YearsofService),SA_rateofPay=mean(SA_RateofPay),meanChild=mean(child),meanHomeowners=mean(homeowners),count=n(),meanPurchaseBasketSize=mean(purchasebasketsize),productcompetency=mean(productcompetency),servicecompetency=mean(servicecompetency))
+
+#merging MonthlyHRaggregate and uniqueHRdata
+FinalHRdata123<- merge(monthlyHRaggregate12, uniqueHRdataS, by=c("sales_assoc_1"), all=TRUE)
+
+#renaming count variable as monthlypurchases
+colnames(FinalHRdata123)[colnames(FinalHRdata123)=="count"]<-"monthlyPurchases"
+
+#Adding fiscal year column in Final HR data
+FinalHRdata123$month_num <- ((FinalHRdata123$month_index+7) %% 12)
+FinalHRdata123$month_num<- ifelse(FinalHRdata123$month_num==0,12,FinalHRdata123$month_num)
+FinalHRdata123$fiscalyear<-ifelse(FinalHRdata123$month_num==8,(FinalHRdata123$year+1),ifelse(FinalHRdata123$month_num==9,(FinalHRdata123$year+1),ifelse(FinalHRdata123$month_num==10,(FinalHRdata123$year+1),ifelse(FinalHRdata123$month_num==11,(FinalHRdata123$year+1),ifelse(FinalHRdata123$month_num==12,(FinalHRdata123$year+1),FinalHRdata123$year)))))
+```
+
+```{r}
+##Merging training data with FinalHRdataSurvey12
+Model2Trainingdata=read_excel("sptraining.xlsx")
+
+#renaming the column heads
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Warranties"]<-"Warranty"
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="Sp. Events"]<-"Spec. Ev."
+colnames(Model2Trainingdata)[colnames(Model2Trainingdata)=="EID"]<-"sales_assoc_1"
+
+#creating a subset of Model2Trainingdata which doesnot include store#,state,assignment category. Because this info. is present in HR data.so dont want redundant data.
+subsetTraining<-Model2Trainingdata[c("Status","sales_assoc_1","Job Name","Start Date","Rehire","Warranty","Credit","Spec. Ev.","Celebrity Brand","Celebration","Watches","Color","Service & Selling","fiscalyear","ptraining","straining")]
+
+#Merging SubsetTraining with FinalHRdata
+SurveyMod<-merge(FinalHRdata123, subsetTraining, by=c("sales_assoc_1", "fiscalyear"),all=TRUE)
+
+## Removing 126 extra rows from SurveyMod
+
+SurveyMod2<-SurveyMod[!is.na(SurveyMod$month_index), ]
+```
+## Merging SurveyMod2 with Store attributes
+
+```{r}
+SurveyMod3 <-merge(SurveyMod2, store, by=c("store_number"), all=TRUE)
+
+## Removing 1 extra rows from SurveyMod3
+SurveyMod4<-SurveyMod3[!is.na(SurveyMod3$sales_assoc_1), ]
+
+#creating dummy variables for gender of customers
+SurveyMod4$SA_gender1<-ifelse(SurveyMod4$SA_gender=="F",1,0)
+SurveyMod4$SA_Dependent<-ifelse(SurveyMod4$SA_Dependent=="Yes",1,0)
+SurveyMod4$ST <- factor(SurveyMod4$ST, levels = c("AR", "AZ","FL","IA","IL","IN","MA","MD","MI","OK","PA","PR","SD","TX"," VA","WA" ))
+
+#Dividing survey scores into three categories.
+#SurveyMod4$PercievedCompetency<-ifelse(SurveyMod4$meanSurveyScore>=35,"Good",ifelse(SurveyMod4$meanSurveyScore>18,"OK","Bad"))
+#SurveyMod4$training<-ifelse(SurveyMod4$TrainingCompleted>0,1,0)
+#SurveyMod4$TrainingCompleted<-ifelse(is.na(SurveyMod4$TrainingCompleted),0,SurveyMod4$TrainingComplete)
+SurveyMod5  = na.omit(SurveyMod4, cols= "meanAgeBand")
+
+```
+## Check Multicollineary
+```{r}
+#Multicollinearity
+#Error in vif(df1) : object 'df1' not found
+##library(VIF)
+##library(usdm)
+
+##df1=data.frame(Mod4$ptraining,SurveyMod4$straining,SurveyMod4$SA_serviceyears,SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales,SurveyMod4$MallSalesSF,SurveyMod4$fiscalyear)
+
+##cor(df1)
+##vif(df1)
+
+```
+# 1st Model
+```{r}
+logmonthlysales<-log(Mod1data$monthlysales+1)
+factorJobName<-factor(Mod1data$`Job Name`)
+
+Model1<-lm(logmonthlysales~training+meanAgeBand+meanIncomeCode+MeanFemales+MeanMales+SA_serviceyears+SA_rateofPay+meanChild+meanHomeowners+factor(month_num)+factor(fiscalyear)+factor(ST)+factor(MallGrade)+TotalCases, data=Mod1data)
+print(summary(Model1))
+
+
+
+
+ModelPR1<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num))
+summary(ModelPR1)
+
+
+coooolll
+#Multicollinearity
+library(VIF)
+library(usdm)
+
+df1=data.frame(Mod1data$training,Mod1data$meanAgeBand,Mod1data$meanIncomeCode,Mod1data$MeanFemales,Mod1data$MeanMales,Mod1data$SA_serviceyears,Mod1data$SA_rateofPay,Mod1data$meanChild,Mod1data$meanHomeowners, Mod1data$month_num,  Mod1data$TotalCases, Mod1data$fiscalyear, Mod1data$MallSalesSF,Mod1data$StoreSqFt)
+
+vif(df1)     
+cor(df1)
+
+
+```{r}
+library(usdm)
+library(VIF)
+dfS1=data.frame(SurveyMod4$ptraining+SurveyMod4$straining,SurveyMod4$SA_serviceyears,SurveyMod4$meanIncomeCode, SurveyMod4$MeanFemales, SurveyMod4$MeanMales, SurveyMod4$MallSalesSF SurveyMod4$SA_rateofPay,SurveyMod4$meanChild,SurveyMod4$meanHomeowners, SurveyMod4$month_num, SurveyMod4$SA_serviceyears, SurveyMod4$TotalCases, SurveyMod4$fiscalyear, SurveyMod4$sales_assoc_1, SurveyMod4$store_number,SurveyMod4$MallSalesSF,SurveyMod4$StoreSqFt,SurveyMod4$MeanMales, SurveyMod4$monthlyreturn, SurveyMod4$SA_gender1) 
+
+vif(dfS1)
+cor(dfS1)
+SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num))
+
+
+dfS1=data.frame(SurveyMod4$TrainingCompleted,SurveyMod4$monthlysales,SurveyMod4$monthlyreturn,SurveyMod4$SA_gender1,SurveyMod4$meanAgeBand,SurveyMod4$meanIncomeCode,SurveyMod4$month_num,SurveyMod4$SA_serviceyears,SurveyMod4$SA_rateofPay,SurveyMod4$MallSalesSF, SurveyMod4$MeanFemales, SurveyMod4$MeanMales)
+
+vif(dfS1)
+cor(dfS1)
+```
+
+
+```{r}
+## Compare alternative product models
+
+library(lmtest)
+#Initial Model
+ModelPR1<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num))
+summary(ModelPR1)##p-value: 0.4264>.05, hence insignificant
+
+###Model with SA_rateofPay 
+ModelPR2<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear+factor(SurveyMod4$month_num)+SurveyMod4$SA_rateofPay)
+summary(ModelPR2)##p-value: 0.4601>.05, hence insignificant
+
+anova(ModelPR1, ModelPR2, test = "Chisq") #Chi Square test shows that  ModelPR1 is better than ModelPR2
+
+###Model with factor(SurveyMod4$`Job Name`) 
+ModelPR3<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear+factor(SurveyMod4$month_num)+factor(SurveyMod4$`Job Name`))
+summary(ModelPR3)
+
+anova(ModelPR1, ModelPR3, test = "Chisq") #Chi Square test shows that  ModelPR1 is better than ModelPR3
+
+###Model with SurveyMod4$meanChild
+ModelPR4<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanChild)
+summary(ModelPR4)
+
+anova(ModelPR1, ModelPR4, test = "Chisq") #Chi Square test shows that  ModelPR1 is better than ModelPR4
+
+###Model with SurveyMod4$meanPurchaseBasketSize
+ModelPR5<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize)
+
+summary(ModelPR5)
+
+anova(ModelPR1, ModelPR5, test = "Chisq") #Chi Square test shows that  ModelPR5 is better than ModelPR1
+
+###Model with SurveyMod4$monthlysales
+ModelPR6<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+ SurveyMod4$monthlysales)
+summary(ModelPR6)
+
+anova(ModelPR5, ModelPR6, test = "Chisq") #Chi Square test shows that  ModelPR5 is better than ModelPR6
+
+###Model with SurveyMod4$monthlyreturn
+ModelPR7<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR7)
+
+anova(ModelPR5, ModelPR7, test = "Chisq") #Chi Square test shows that  ModelPR7 is better than ModelPR5
+
+###Model with SurveyMod4$monthlyPurchases  
+ModelPR8<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$monthlyPurchases)
+summary(ModelPR8)
+
+anova(ModelPR7, ModelPR8, test = "Chisq") #Chi Square test shows that  ModelPR7 is better than ModelPR8
+
+
+###Model with SurveyMod4$meanHomeowners
+ModelPR9<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$meanHomeowners)
+summary(ModelPR9)
+
+anova(ModelPR7, ModelPR9, test = "Chisq")#Chi Square test shows that  ModelPR7 is better than ModelPR9
+
+###Model with SurveyMod4$TotalCases
+ModelPR10<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$TotalCases)
+summary(ModelPR10)
+
+anova(ModelPR7, ModelPR10, test = "Chisq")#Chi Square test shows that  ModelPR7 is better than ModelPR10
+
+###Model with SurveyMod4$PadCount
+ModelPR11<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$PadCount)
+summary(ModelPR11)
+
+anova(ModelPR7, ModelPR11, test = "Chisq")#Chi Square test shows that  ModelPR7 is better than ModelPR11
+
+###Model without SurveyMod4$fiscalyear 
+ModelPR12<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR12)
+
+anova(ModelPR7, ModelPR12, test = "Chisq") #Chi Square test shows that  ModelPR12 is better than ModelPR7
+
+####Model without factor(SurveyMod4$MallGrade) 
+ModelPR13<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR13)
+
+anova(ModelPR12, ModelPR13, test = "Chisq")#Chi Square test shows that  ModelPR13 is better than ModelPR12
+
+
+####Model without SurveyMod4$MallSalesSF 
+ModelPR14<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR14)
+
+anova(ModelPR13, ModelPR14, test = "Chisq")#Chi Square test shows that  ModelPR14 is better than ModelPR13
+
+####Model without SurveyMod4$MajorCompetitorPresent 
+ModelPR15<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$month_num)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR15)
+
+anova(ModelPR14, ModelPR15, test = "Chisq")#Chi Square test shows that  ModelPR15 is better than ModelPR14
+
+
+####Model without factor(SurveyMod4$month_num) 
+ModelPR16<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR16)
+
+anova(ModelPR15, ModelPR16, test = "Chisq")#Chi Square test shows that  ModelPR16 is better than ModelPR15
+
+####Model with SA_gender1
+ModelPR17<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+ SurveyMod4$SA_gender1)
+summary(ModelPR17)
+
+
+anova(ModelPR16, ModelPR17, test = "Chisq")# Model16#Chi Square test shows that  ModelPR16 is better than ModelPR17
+
+####Model with SA_marital status
+ModelPR18<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+ SurveyMod4$SA_MartialStatus)
+summary(ModelPR18)
+
+anova(ModelPR16, ModelPR18, test = "Chisq")# Model16#Chi Square test shows that  ModelPR16 is better than ModelPR18
+
+###Though Model 16 onwards p value of the model is significant, but adjusted R^2 is  very low and   Key independent variables are insignificant
+
+####So final OLS Model 16
+
+ModelPR16<-lm(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR16)
+
+
+```
+#Test for Heteroskedasticity
+```{r}
+
+library(msm)
+library(lmtest)
+gqtest(ModelPR16)#p-value is significant.GQ test result says that there is heteroskedasticity
+bptest(ModelPR16)# p-value is insignificant. So, there is heteroskedasticity.
+library(sandwich)
+library(foreign)
+coeftest(ModelPR16, vcov = vcovHC(ModelPR16, "HC1"))#So, generated robust standard errors however, insights did not change
+
+
+```
+
+```{r}
+####Endogenty 
+
+library(AER)
+library(foreign)
+
+ModelPR21<-ivreg(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$fiscalyear +SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_gender1+SurveyMod4$SA_MartialStatus+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$fiscalyear +SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR21,diagnostics = TRUE)
+##for Model PR23 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Since one of the two assumptions  not met; therefore Wu-Hausman is valid
+
+ModelPR23<-ivreg(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$fiscalyear+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_Dependent+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$fiscalyear+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR23,diagnostics = TRUE)
+
+##for Model PR23 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+ModelPR24<-ivreg(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_Dependent+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR24,diagnostics = TRUE)
+##for Model PR23 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+ModelPR25<-ivreg(SurveyMod4$productcompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$MallSalesSF+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelPR25,diagnostics = TRUE)
+##for Model PR23 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+```
+
+
+## Check Multicollineary
+```{r}
+## Check Multicollineary
+```{r}
+#Multicollinearity
+#Error in vif(df1) : object 'df1' not found
+##library(VIF)
+##library(usdm)
+
+##df1=data.frame(Mod4$ptraining,SurveyMod4$straining,SurveyMod4$SA_serviceyears,SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales,SurveyMod4$MallSalesSF,SurveyMod4$fiscalyear)
+
+##cor(df1)
+##vif(df1)
+
+```
+
+```{r}
+## Compare alternative service models
+
+
+library(lmtest)
+library(usdm)
+
+
+#Initial Model
+
+
+ModelSR1<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num))
+summary(ModelSR1)
+
+###Model with SA_rateofPay 
+ModelSR2<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear+factor(SurveyMod4$month_num)+SurveyMod4$SA_rateofPay)
+summary(ModelSR2)
+
+
+anova(ModelSR1, ModelSR2, test = "Chisq") #Chi Square test shows that  ModelSR1 is better than ModelSR2
+
+###Model with factor(SurveyMod4$`Job Name`) 
+ModelSR3<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear+factor(SurveyMod4$month_num)+factor(SurveyMod4$`Job Name`))
+summary(ModelSR3)
+
+anova(ModelSR1, ModelSR3, test = "Chisq") # #Chi Square test shows that  ModelSR1 is better than ModelSR2
+
+###Model with SurveyMod4$meanChild
+ModelSR4<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanChild)
+summary(ModelSR4)
+
+anova(ModelSR1, ModelSR4, test = "Chisq") # #Chi Square test shows that  ModelSR1 is better than ModelSR4
+
+###Model with SurveyMod4$meanPurchaseBasketSize
+ModelSR5<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize)
+summary(ModelSR5)
+
+anova(ModelSR1, ModelSR5, test = "Chisq") #Chi Square test shows that  ModelSR5is better than ModelSR1
+
+###Model with SurveyMod4$monthlysales
+ModelSR6<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+ SurveyMod4$monthlysales)
+summary(ModelSR6)
+
+anova(ModelSR5, ModelSR6, test = "Chisq") #Chi Square test shows that  ModelSR5is better than ModelSR6
+
+###Model with SurveyMod4$monthlyreturn
+ModelSR7<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR7)
+
+anova(ModelSR5, ModelSR7, test = "Chisq") #Chi Square test shows that  ModelSR7is better than ModelSR5
+
+###Model with SurveyMod4$monthlyPurchases  
+ModelSR8<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$monthlyPurchases)
+summary(ModelSR8)
+
+anova(ModelSR7, ModelSR8, test = "Chisq") # #Chi Square test shows that  ModelSR7is better than ModelSR8
+
+library(lmtest)
+
+###Model with SurveyMod4$meanHomeowners
+ModelSR9<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$meanHomeowners)
+summary(ModelSR9)
+
+anova(ModelSR7, ModelSR9, test = "Chisq")##Chi Square test shows that  ModelSR7is better than ModelSR9
+
+###Model with SurveyMod4$TotalCases
+ModelSR10<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$TotalCases)
+summary(ModelSR10)
+
+anova(ModelSR7, ModelSR10, test = "Chisq")###Chi Square test shows that  ModelSR7is better than ModelSR10
+
+###Model with SurveyMod4$PadCount
+ModelSR11<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+SurveyMod4$fiscalyear +factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$PadCount)
+summary(ModelSR11)
+
+anova(ModelSR7, ModelSR11, test = "Chisq")##Chi Square test shows that  ModelSR7is better than ModelSR11
+
+###Model without SurveyMod4$fiscalyear 
+ModelSR12<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$MallGrade)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR12)
+
+library(lmtest)
+anova(ModelSR7, ModelSR12, test = "Chisq") ##Chi Square test shows that  ModelSR12is better than ModelSR7
+
+
+####Model without factor(SurveyMod4$MallGrade) 
+ModelSR13<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+ SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$MallSalesSF+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR13)
+
+anova(ModelSR12, ModelSR13, test = "Chisq")##Chi Square test shows that  ModelSR13is better than ModelSR12
+
+####Model without SurveyMod4$MallSalesSF 
+ModelSR14<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$MajorCompetitorPresent+factor(SurveyMod4$month_num)+ SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR14)
+
+anova(ModelSR13, ModelSR14, test = "Chisq")##Chi Square test shows that  ModelSR14is better than ModelSR13
+
+####Model without SurveyMod4$MajorCompetitorPresent 
+ModelSR15<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+factor(SurveyMod4$month_num)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+
+anova(ModelSR14, ModelSR15, test = "Chisq")##Chi Square test shows that  ModelSR15is better than ModelSR14
+
+
+####Model without factor(SurveyMod4$month_num) 
+ModelSR16<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR16)
+
+anova(ModelSR15, ModelSR16, test = "Chisq")##Chi Square test shows that  ModelSR16is better than ModelSR15
+
+####Model with SA_gender1
+ModelSR17<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn+SurveyMod4$SA_gender1)
+summary(ModelSR17)
+
+anova(ModelSR16, ModelSR17, test = "Chisq")##Chi Square test shows that  ModelSR16is better than ModelSR17
+
+###Though Model 16 onwards p value of the model is significant, but adjusted R^2 is  very low and   Key independent variables are insignificant
+##Final OLS Model
+ModelSR16<-lm(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR16)
+
+
+
+```
+#Test for Heteroskedasticity
+```{r}
+
+library(msm)
+library(lmtest)
+gqtest(ModelSR16)#p-value is significant.GQ test result says that there is heteroskedasticity
+bptest(ModelSR16)# p-value is insignificant. So, there is heteroskedasticity.
+library(sandwich)
+library(foreign)
+coeftest(ModelSR16, vcov = vcovHC(ModelSR16, "HC1"))#So, need to use robust standard errors.
+summary(ModelSR16)
+
+```
+
+```{r}
+###ENDOGENITY--SERVICE MODEL
+
+library(AER)
+library(foreign)
+ModelSR21<-ivreg(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_gender1+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_serviceyears+SurveyMod4$SA_AssignmentCategory+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR21,diagnostics = TRUE)
+
+##for Model SR21 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+ModelSR22<-ivreg(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_gender1+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR22,diagnostics = TRUE)
+##for Model SR22 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+ModelSR23<-ivreg(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_Dependent+SurveyMod4$SA_MartialStatus+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR23,diagnostics = TRUE)
+
+##for Model SR22 , 1)F-Statistics of the instruments <10, therefore instrument relevance assumption not met, Sinc one of the two assumptions  not met therefore Wu-Hausman is valid
+
+ModelSR24<-ivreg(SurveyMod4$servicecompetency~SurveyMod4$ptraining+SurveyMod4$straining+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn|SurveyMod4$SA_Dependent+SurveyMod4$MallSalesSF+SurveyMod4$SA_AssignmentCategory+SurveyMod4$SA_serviceyears+SurveyMod4$meanIncomeCode+SurveyMod4$MeanFemales+SurveyMod4$MeanMales+factor(SurveyMod4$ST)+SurveyMod4$meanPurchaseBasketSize+SurveyMod4$monthlyreturn)
+summary(ModelSR24,diagnostics = TRUE)
+
+```
+
